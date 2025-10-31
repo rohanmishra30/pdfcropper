@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Resizable PDF Cropper (Preview + Bulk Apply)</title>
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    background: #f4f6f8;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 30px;
+  }
+  h2 { color: #333; }
+  #container {
+    position: relative;
+    display: inline-block;
+  }
+  canvas {
+    border: 1px solid #ccc;
+    margin-top: 20px;
+    box-shadow: 0 0 8px rgba(0,0,0,0.15);
+  }
+  #cropArea {
+    position: absolute;
+    border: 2px dashed #ff0000;
+    background: rgba(255,0,0,0.1);
+    resize: both;
+    overflow: auto;
+    cursor: move;
+  }
+  #cropArea::after {
+    content: "";
+    position: absolute;
+    right: -6px;
+    bottom: -6px;
+    width: 12px;
+    height: 12px;
+    background: #ff0000;
+    cursor: se-resize;
+  }
+  button {
+    margin-top: 15px;
+    padding: 10px 20px;
+    font-size: 16px;
+    border: none;
+    border-radius: 6px;
+    background: #007bff;
+    color: white;
+    cursor: pointer;
+  }
+  button:hover { background: #0056b3; }
+  #status { margin-top: 15px; color: green; font-weight: bold; }
+</style>
+</head>
+<body>
+
+<h2>✂️ PDF Cropper (Drag + Resize + Apply to All)</h2>
+
+<input type="file" id="pdfFile" accept="application/pdf" />
+<div id="container">
+  <canvas id="pdfCanvas"></canvas>
+  <div id="cropArea"></div>
+</div>
+
+<button id="applyBtn">Apply Crop to All Pages & Download</button>
+<div id="status"></div>
+
+<!-- Libraries -->
+<script src="https://unpkg.com/pdf-lib/dist/pdf-lib.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.14.305/pdf.min.js"></script>
+
+<script>
+  const fileInput = document.getElementById('pdfFile');
+  const canvas = document.getElementById('pdfCanvas');
+  const ctx = canvas.getContext('2d');
+  const cropArea = document.getElementById('cropArea');
+  const container = document.getElementById('container');
+  const applyBtn = document.getElementById('applyBtn');
+  const status = document.getElementById('status');
+
+  let pdfData, pdfDoc, firstPage, viewport;
+  let isDragging = false, isResizing = false;
+  let startX, startY, startWidth, startHeight;
+  let cropBox = { x: 50, y: 50, width: 400, height: 400 };
+
+  // Load PDF
+  fileInput.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    pdfData = await file.arrayBuffer();
+
+    pdfDoc = await pdfjsLib.getDocument({ data: pdfData }).promise;
+    firstPage = await pdfDoc.getPage(1);
+    viewport = firstPage.getViewport({ scale: 1.5 });
+
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+
+    const renderContext = { canvasContext: ctx, viewport: viewport };
+    await firstPage.render(renderContext).promise;
+
+    cropBox = { x: 50, y: 50, width: canvas.width - 100, height: canvas.height - 100 };
+    updateCropBox();
+  });
+
+  function updateCropBox() {
+    cropArea.style.left = cropBox.x + 'px';
+    cropArea.style.top = cropBox.y + 'px';
+    cropArea.style.width = cropBox.width + 'px';
+    cropArea.style.height = cropBox.height + 'px';
+  }
+
+  // Detect mousedown (resize or drag)
+  cropArea.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    const rect = cropArea.getBoundingClientRect();
+    const offsetX = e.clientX - rect.left;
+    const offsetY = e.clientY - rect.top;
+
+    // If near bottom-right corner, start resize
+    if (offsetX > rect.width - 15 && offsetY > rect.height - 15) {
+      isResizing = true;
+      startWidth = cropBox.width;
+      startHeight = cropBox.height;
+      startX = e.clientX;
+      startY = e.clientY;
+    } else {
+      // Else start dragging
+      isDragging = true;
+      startX = e.clientX - cropBox.x;
+      startY = e.clientY - cropBox.y;
+    }
+  });
+
+  // Move or resize crop box
+  window.addEventListener('mousemove', (e) => {
+    if (isDragging) {
+      cropBox.x = e.clientX - startX;
+      cropBox.y = e.clientY - startY;
+    } else if (isResizing) {
+      const diffX = e.clientX - startX;
+      const diffY = e.clientY - startY;
+      cropBox.width = Math.max(50, startWidth + diffX);
+      cropBox.height = Math.max(50, startHeight + diffY);
+    }
+    updateCropBox();
+  });
+
+  window.addEventListener('mouseup', () => {
+    isDragging = false;
+    isResizing = false;
+  });
+
+  // Apply crop to all pages
+  applyBtn.addEventListener('click', async () => {
+    if (!pdfData) return alert('Please upload a PDF first!');
+    status.textContent = 'Processing... please wait';
+
+    const pdfLibDoc = await PDFLib.PDFDocument.load(pdfData);
+    const pages = pdfLibDoc.getPages();
+
+    const pxToPt = (px) => px / 1.5; // 1.5 = scale factor
+
+    const left = pxToPt(cropBox.x);
+    const bottom = pxToPt(canvas.height - (cropBox.y + cropBox.height));
+    const width = pxToPt(cropBox.width);
+    const height = pxToPt(cropBox.height);
+
+    pages.forEach(page => {
+      page.setCropBox(left, bottom, width, height);
+      page.setMediaBox(left, bottom, width, height);
+    });
+
+    const newPdf = await pdfLibDoc.save();
+    const blob = new Blob([newPdf], { type: 'application/pdf' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'cropped.pdf';
+    a.click();
+
+    status.textContent = '✅ Cropped PDF downloaded successfully!';
+  });
+</script>
+
+</body>
+</html>
